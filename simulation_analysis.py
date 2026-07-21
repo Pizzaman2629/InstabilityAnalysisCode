@@ -7,6 +7,7 @@ Uses Chimera Reader (added to repository)
 
 import numpy as np
 import reader
+import os
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from scipy.integrate import simpson
@@ -551,7 +552,7 @@ class Single_Sim():
         return growth_rates, start_indices, end_indices #Output all the useful data.
 
     #### PLOT: Show how the amplitude of each frequency grows with time (Useful to see a linear growth diverge into non-linear modes) ####
-    def a_x_t_plot(self, save=False, show=True):
+    def a_x_t_plot(self, save=False, show=True, save_dir="debug_plots"):
         plt.figure(figsize=(10, 6))
 
         threshold = 1e-2 * np.max(self.a_x_t)
@@ -570,11 +571,18 @@ class Single_Sim():
         plt.ylim(self.times.min(), self.times.max())
         plt.tight_layout()
 
+        #Saving instead of / in addition to showing, useful for batch debugging.
+        if save:
+            os.makedirs(save_dir, exist_ok=True)
+            plt.savefig(os.path.join(save_dir, f"{self.simulation}_a_x_t_plot.png"), dpi=300, bbox_inches='tight')
+
         if show:
             plt.show()
+        else:
+            plt.close()
 
     #### PLOT: Plots the linear region start and end times of different modes in the spectrum ####
-    def timing_line_map_plotter(self, save=False, show=True, n_modes=20):
+    def timing_line_map_plotter(self, save=False, show=True, n_modes=20, save_dir="debug_plots"):
         plt.figure(figsize=(10, 6))
 
         amp_dom_idx = np.argmax(np.max(self.valid_a_x_t, axis=0))
@@ -617,11 +625,18 @@ class Single_Sim():
         plt.legend(loc='upper right')
         plt.tight_layout()
 
+        #Saving instead of / in addition to showing, useful for batch debugging.
+        if save:
+            os.makedirs(save_dir, exist_ok=True)
+            plt.savefig(os.path.join(save_dir, f"{self.simulation}_timing_line_map.png"), dpi=300, bbox_inches='tight')
+
         if show:
             plt.show()
+        else:
+            plt.close()
 
     #### PLOT: Plots Amplitude vs time for different modes ####
-    def mode_plotter(self, save=False, show=True, n_modes=20):
+    def mode_plotter(self, save=False, show=True, n_modes=20, save_dir="debug_plots"):
         plt.figure(figsize=(10, 6))
 
         amp_dom_idx = np.argmax(np.max(self.valid_a_x_t, axis=0))
@@ -651,11 +666,18 @@ class Single_Sim():
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
 
+        #Saving instead of / in addition to showing, useful for batch debugging.
+        if save:
+            os.makedirs(save_dir, exist_ok=True)
+            plt.savefig(os.path.join(save_dir, f"{self.simulation}_mode_plot.png"), dpi=300, bbox_inches='tight')
+
         if show:
             plt.show()
+        else:
+            plt.close()
 
     #### PLOT: Plots 20 modes with their linear regions to visualize region detection ####
-    def grid_diagonistics(self, save=False, show=True, n_modes=20):
+    def grid_diagonistics(self, save=False, show=True, n_modes=20, save_dir="debug_plots"):
         amp_dom_idx = np.argmax(np.max(self.valid_a_x_t, axis=0))
         mode_step = max(1, int(self.wavelengths_m.size / (n_modes - 1)))
         bg_modes = np.arange(0, self.wavelengths_m.size, mode_step).tolist()
@@ -716,11 +738,18 @@ class Single_Sim():
         plt.suptitle("Automated Anchored Fits Across 20 Spectral Modes", fontsize=16, fontweight='bold', y=1.02)
         plt.tight_layout()
 
+        #Saving instead of / in addition to showing, useful for batch debugging.
+        if save:
+            os.makedirs(save_dir, exist_ok=True)
+            plt.savefig(os.path.join(save_dir, f"{self.simulation}_grid_diagnostics.png"), dpi=300, bbox_inches='tight')
+
         if show:
             plt.show()
+        else:
+            plt.close()
 
     #### PLOT: Plots the dispersion relation (wavelength vs growth rates) ####
-    def growth_rate_plotter(self, save=False, show=True):
+    def growth_rate_plotter(self, save=False, show=True, save_dir="debug_plots"):
         plt.figure(figsize=(20, 6))
 
         threshold = 1e-2 * np.max(self.valid_a_x_t)
@@ -750,5 +779,12 @@ class Single_Sim():
         plt.gca().invert_xaxis()
         plt.tight_layout()
 
+        #Saving instead of / in addition to showing, useful for batch debugging.
+        if save:
+            os.makedirs(save_dir, exist_ok=True)
+            plt.savefig(os.path.join(save_dir, f"{self.simulation}_growth_rate.png"), dpi=300, bbox_inches='tight')
+
         if show:
             plt.show()
+        else:
+            plt.close()
