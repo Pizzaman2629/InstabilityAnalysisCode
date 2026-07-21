@@ -3,11 +3,20 @@ batch_processing.py
 
 Code created by Lavya.
 """
+
 import numpy as np
 import matplotlib.pyplot as plt
 
+####
+#LINE SWEEPER CLASS
+####
+
 class line_sweeper():
     def __init__(self, simulator, simulations, parameters, parameter_name):
+        """
+        Class to sweep a 1-dimensional parameter space. 
+        Outputs a line plot for amplitude dominant mode, growth dominant mode and breakout times. 
+        """
         #Loading the simulator
         self.simulator = simulator
 
@@ -22,26 +31,34 @@ class line_sweeper():
         if np.size(self.parameters) != len(simulations):
             raise ValueError("Number of simulations does not correspond with number of parameters")
     
-    #Data loader function
+    #### CALCULATION: Data Loading Function (Loops through Simulations) ####
     def data_loader(self, simulations):
+        """
+        Function to loop over simulations and extract relevant data. 
+        """
+        # Initializing lists for amplitude dominant mode.
         self.dom_a = []
         self.dom_a_growth = []
         self.dom_a_linstart = []
         self.dom_a_linend = []
 
+        #Initializing lists for growth dominant mode.
         self.dom_g = []
         self.dom_g_growth = []
         self.dom_g_linstart = []
         self.dom_g_linend = []
 
+        #Initializing lists for the general values.
         self.a_x_t = []
         self.start_indices = []
         self.end_indices = []
         self.wavelengths = []
         self.times = []
 
+        #Initializing lists for the breakout times.
         self.breakout_time = []
 
+        #Loop over simulations to load relevant data.
         for simulation in simulations:
             print(f"Solving for simulation: {simulation}")
             simulator = self.simulator(simulation)
@@ -71,7 +88,7 @@ class line_sweeper():
         self.dom_g_linend = np.array(self.dom_g_linend)
         self.breakout_time = np.array(self.breakout_time)
 
-    # Plotting functions
+    #### PLOT: Plots data for the amplitude dominant mode ####
     def dominant_mode(self, show=True, save=False):
         # Create a 1x3 grid (1 row, 3 columns)
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -112,6 +129,7 @@ class line_sweeper():
         if show:
             plt.show()
 
+    #### PLOT: Plots data for the growth dominant mode ####
     def growth_mode(self, show=True, save=False):
         # Create a 1x3 grid (1 row, 3 columns)
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -151,6 +169,7 @@ class line_sweeper():
         if show:
             plt.show()
 
+    #### PLOT: Plots data for the breakout times ####
     def breakout_time_plot(self, show=True, save=False):
         fig, ax = plt.subplots(figsize=(8, 5))
 
@@ -183,37 +202,67 @@ class line_sweeper():
         if show:
             plt.show()
 
+####
+#BRANE SWEEPER CLASS
+####
+
 class brane_sweeper():
-    def __init__(self, simulator, simulations, parameters, parameter_names):
+    def __init__(self, simulator, simulations, parameters, parameter_names,
+                 debug=False, debug_interval=100, debug_dir="debug_plots"):
+        """
+        Class to sweep a p-dimensional parameter space. 
+        Gives data in the form of corner plots for amplitude dominant mode, growth dominant mode and shock breakout times. 
+        """
+        
+        #Setup the simulator. Passed in as a lambda.
         self.simulator = simulator
+
+        #Debug mode variables.
+        self.debug = debug
+        self.debug_interval = debug_interval
+        self.debug_dir = debug_dir
+
+        #Load simulation data using data loader function.
         self.data_loader(simulations)
+
+        #Parameter lists.
         self.parameters = np.array(parameters)
         
         if self.parameters.ndim == 1:
             self.parameters = self.parameters.reshape(-1, 1)
             
-        self.parameter_names = parameter_names
+        self.parameter_names = parameter_names #Make parameter names into a self variable.
 
+        #Fallbacks for shape mismatches.
         if self.parameters.shape[0] != len(simulations):
             raise ValueError(f"Shape mismatch: {len(simulations)} simulations provided but {self.parameters.shape[0]} parameter points given.")
             
         if self.parameters.shape[1] != len(self.parameter_names):
             raise ValueError(f"Dimension mismatch: parameters array has {self.parameters.shape[1]} dimensions, but {len(self.parameter_names)} names were provided.")
     
+    #### CALCULATION: Data Loading Function (Loops through Simulations) ####
     def data_loader(self, simulations):
+        """
+        Function to loop over simulations and extract relevant data. 
+        """
+
+        #Initializing lists for amplitude dominant mode.
         self.dom_a = []
         self.dom_a_growth = []
         self.dom_a_linstart = []
         self.dom_a_linend = []
 
+        #Initializing lists for growth dominant mode.
         self.dom_g = []
         self.dom_g_growth = []
         self.dom_g_linstart = []
         self.dom_g_linend = []
 
+        #Initializing lists for breakout times.
         self.breakout_time = []
 
-        for simulation in simulations:
+        #Looping over simulations.
+        for i, simulation in enumerate(simulations):
             print(f"Solving for simulation: {simulation}")
             simulator = self.simulator(simulation)
             
@@ -230,7 +279,16 @@ class brane_sweeper():
             self.breakout_time.append(
                 simulator.breakout_time if simulator.breakout_time is not None else np.nan
             )
+
+            #Debug mode control flows. Dump all diagnostics for chosen intervals.
+            if self.debug and (i % self.debug_interval == 0):
+                print(f"[debug] Saving single-sim diagnostics for simulation: {simulation}")
+                simulator.mode_plotter(save=True, show=False, save_dir=self.debug_dir)
+                simulator.timing_line_map_plotter(save=True, show=False, save_dir=self.debug_dir)
+                simulator.grid_diagonistics(save=True, show=False, save_dir=self.debug_dir)
+                simulator.growth_rate_plotter(save=True, show=False, save_dir=self.debug_dir)
         
+        #Convert list to arrays for futher plotting, etc.
         self.dom_a_growth = np.array(self.dom_a_growth)
         self.dom_a_linstart = np.array(self.dom_a_linstart)
         self.dom_a_linend = np.array(self.dom_a_linend)
@@ -239,6 +297,7 @@ class brane_sweeper():
         self.dom_g_linend = np.array(self.dom_g_linend)
         self.breakout_time = np.array(self.breakout_time)
 
+    #### PLOT: Draws a scatter matrix (helper function for corner plots) ####
     def _draw_scatter_matrix(self, data, labels, title, color):
         """Helper method to draw a triangular scatter matrix without MCMC constraints."""
         from matplotlib.ticker import MaxNLocator
@@ -307,6 +366,7 @@ class brane_sweeper():
         fig.suptitle(title, fontsize=16, fontweight='bold', y=1.02)
         return fig
     
+    #### PLOT: Plots data for the amplitude dominant mode ####
     def dominant_mode(self, show=True, save=False):
         # Added the original line_sweeper colors as the 4th item in the tuple
         metrics = [
@@ -332,6 +392,7 @@ class brane_sweeper():
         if show:
             plt.show()
 
+    #### PLOT: Plots data for the growth dominant mode ####
     def growth_mode(self, show=True, save=False):
         # Added the original line_sweeper colors here as well
         metrics = [
@@ -357,6 +418,7 @@ class brane_sweeper():
         if show:
             plt.show()
 
+    #### PLOT: Plots data for the breakout times ####
     def breakout_time_plot(self, show=True, save=False):
         data_stacked = np.column_stack((self.parameters, self.breakout_time))
         labels = self.parameter_names + ["Breakout Time (s)"]
