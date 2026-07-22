@@ -8,7 +8,7 @@ Set of codes used to analyze different modes for different laser induced perturb
 ## Function
 
 ### `simulation_analysis.py`
-Main class for decoding simulations. Compatible with full vti data or 1D integrated streak data. 
+Main class for decoding simulations. Compatible with full vti data or 1D integrated streak data. Also compatible with time dat files dumped from Gorgon/Chimera.
 
 Calculates: 
 * Axially integrated density with respect to time. 
@@ -21,7 +21,7 @@ Calculates:
 Contains the line sweeper and brane sweeper classes. These classes interface with `simulation_analysis.py` to extract data for multiple simulations. 
 
 * **Line Sweeper:** Takes in simulations that vary along a 1D parameter space. Outputs plot of amplitude dominant mode growth rates as a function of the parameter. 
-* **Brane Sweeper:** Extends the line sweeper to a p-dimensional parameter space using corner plots. 
+* **Brane Sweeper:** Extends the line sweeper to a p-dimensional parameter space using corner plots. It is also possible to generate tiled colour coded maps for different parameters.
 
 <img width="2704" height="1676" alt="image" src="https://github.com/user-attachments/assets/390f5660-bb4a-4c9a-b070-82a6a5c233a7" /> 
 
