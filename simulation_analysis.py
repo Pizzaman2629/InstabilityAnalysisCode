@@ -12,21 +12,20 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from scipy.integrate import simpson
 from scipy.fft import fft, fftfreq
-from scipy.signal import savgol_filter
+from scipy.signal import savgol_filter, find_peaks
 
 class Single_Sim():
     def __init__(self, simulation, ROOTDIR, project, start_step, final_step, step_interval, dump_freq,
                  burn_in=0, amp_threshold=1e-5, r2_threshold = 0.98, slice_dir="y", interface="x", integration="z",
                  vis_rho=True, vis_rho_step=200, breakout=False, breakout_threshold=0.03, cell_threshold=0,
                  streak=False, streak_domain=None, streak_dump=None,
-                 streakbreakout=False, streakbreakout_domain=None):
+                 streakbreakout=False, streakbreakout_domain=None,
+                 time_file = False):
         
         """
         Class: Single Sim. 
         This class is used to load data from a single simulation directory. It manages all the data loading and transformations. 
         It also comes equipped with a bunch of plotting functions to visualize and debug each simulation individually. 
-
-        The class is extended between different files as an abc class. 
 
         NOTE: This function needs atleast one VTI file from which to load the grid. If not specified, this analysis code will not work. 
         NOTE: Breakout logic only works if target is set with its non-laser facing edge at x = 0. Otherwise this code will give garbage results. 
@@ -38,13 +37,17 @@ class Single_Sim():
         self.Chimera = reader.ChimeraSimulation(ROOTDIR, project)
         self.chimera_dat = self.Chimera.load_dat(self.simulation)
 
+        #Fallback incase files are not found.
+        if self.chimera_dat is None:
+            raise FileNotFoundError(f"Dat file not found for: {self.simulation}")
+
         #Creating timesteps from user specified input
         self.timesteps = np.arange(start_step, final_step, step_interval)
         self.dump_freq = dump_freq #Vti dump frequency
 
         #Configuring the streaks.
         self.streak = streak #This is the flag for if streak is used or not
-        self.streak_domain = streak_domain #This is the streak file name
+        self.streak_domain = streak_domain + simulation + "Axial_Rho" #This is the streak file name
         self.streak_dump = streak_dump if streak_dump is not None else dump_freq #Streak frequency = Dump frequency if not specified otherwise.
 
         if self.streak and self.streak_domain is None:
@@ -52,7 +55,10 @@ class Single_Sim():
 
         #Flags for reading breakout time data from streak
         self.streakbreakout = streakbreakout #Breakout flag
-        self.streakbreakout_domain = streakbreakout_domain #Breakout streak filename
+        self.streakbreakout_domain = streakbreakout_domain + simulation + "Radial_Rho" #Breakout streak filename
+
+        #Times dat file.
+        self.timedat = streak_domain + simulation + "Time"
 
         if self.streakbreakout and self.streakbreakout_domain is None:
             raise ValueError("streakbreakout=True requires streakbreakout_domain to be set.")
@@ -60,10 +66,17 @@ class Single_Sim():
         """
         NOTE: This is not yet configured for a time file loaded as a DAT. That is a future modification!
         """
-        if self.streak:
+        if self.streak and time_file is not True:
             self.times = self.timesteps * self.streak_dump #This math is because we will be using streaks only for data loading. 
         else:
             self.times = self.timesteps * dump_freq
+
+        #Time dat file loading logic.
+        if self.streak and time_file is True:
+            self.times = self.Chimera.load_dat(self.simulation, external_file=self.timedat)
+            self.times = self.times.iloc[:, 0].to_numpy()
+            self.timesteps = np.round(self.times / self.streak_dump).astype(int)
+            self.timesteps[0] = 0
 
         #Creating arrays for visualizing the densities.
         self.vis_rho_timesteps = np.arange(start_step, final_step, vis_rho_step)
@@ -235,12 +248,11 @@ class Single_Sim():
                 streakbreakout_df = self.Chimera.load_dat(self.simulation, external_file=self.streakbreakout_domain)
 
         #Loop through timesteps (not times!!) to extract data. 
-        for t in self.timesteps:
+        for idx, t in enumerate(self.timesteps):
 
             #Calculation for if streaks are to be loaded
             if self.streak:
                 #Fall backs for streak not loading
-                idx = int(t)
                 if idx >= streak_df.shape[0]:
                     raise ValueError(f"Requested row index {idx} (timestep {t}) exceeds streak file bounds.")
                 
@@ -487,7 +499,7 @@ class Single_Sim():
             return fallback_end, fallback_slope
 
     #### CALCULATION: Get Growth Rates and Linear Region Dependent Quantities ####
-    def compute_linear_regions(self, t_array, amplitudes_2d, skip_steps=0, amp_threshold=1e-4, min_window=10):
+    def compute_linear_regions(self, t_array, amplitudes_2d, skip_steps=0, amp_threshold=1e-4, min_window=2):
         """
         Function that couples to the find_anchored_linear_region function and gives the growth rates, linear region start and end indices. 
 
@@ -537,6 +549,22 @@ class Single_Sim():
                 smoothed_log_amp = savgol_filter(log_amp_eval, window_length=smooth_window, polyorder=2)
             else:
                 smoothed_log_amp = log_amp_eval
+
+            # --- NEW LOGIC: Clip domain to the first local maximum ---
+            # We find peaks on the smoothed data to prevent noise from triggering an early peak
+            peaks, _ = find_peaks(smoothed_log_amp)
+            
+            if len(peaks) > 0:
+                first_peak_idx = peaks[0]
+                
+                # Clip the evaluation arrays up to the first peak (inclusive)
+                t_eval = t_eval[:first_peak_idx + 1]
+                smoothed_log_amp = smoothed_log_amp[:first_peak_idx + 1]
+                
+            # Final fallback incase the first peak happened before our minimum window
+            if len(t_eval) <= min_window:
+                continue
+            # ---------------------------------------------------------
 
             #Use the find anchored linear region function to get the data we need. 
             rel_end, slope = self.find_anchored_linear_region(t_eval, smoothed_log_amp, min_window=min_window, r2_threshold=self.r2_threshold)
