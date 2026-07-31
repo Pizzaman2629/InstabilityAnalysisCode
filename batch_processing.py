@@ -68,14 +68,22 @@ class line_sweeper():
         for simulation in simulations:
             print(f"Solving for simulation: {simulation}")
             simulator = self.simulator(simulation)
+
+            # Convert None -> np.nan on the way in so the arrays below stay
+            # clean float64 (a mix of float and None otherwise silently
+            # becomes an object-dtype array, which breaks downstream
+            # min/max/plotting calls).
+            def _clean(value):
+                return value if value is not None else np.nan
+
             self.dom_a.append(simulator.dom_a)
-            self.dom_a_growth.append(simulator.dom_a_growth)
-            self.dom_a_linstart.append(simulator.dom_a_linstart)
-            self.dom_a_linend.append(simulator.dom_a_linend)
+            self.dom_a_growth.append(_clean(simulator.dom_a_growth))
+            self.dom_a_linstart.append(_clean(simulator.dom_a_linstart))
+            self.dom_a_linend.append(_clean(simulator.dom_a_linend))
             self.dom_g.append(simulator.dom_g)
-            self.dom_g_growth.append(simulator.dom_g_growth)
-            self.dom_g_linstart.append(simulator.dom_g_linstart)
-            self.dom_g_linend.append(simulator.dom_g_linend)
+            self.dom_g_growth.append(_clean(simulator.dom_g_growth))
+            self.dom_g_linstart.append(_clean(simulator.dom_g_linstart))
+            self.dom_g_linend.append(_clean(simulator.dom_g_linend))
             self.a_x_t.append(simulator.valid_a_x_t)
             self.start_indices.append(simulator.start_indices)
             self.end_indices.append(simulator.end_indices)
@@ -109,10 +117,14 @@ class line_sweeper():
             ax.set_ylabel(ylabel, fontsize=12)
             ax.set_xlabel(self.parameter_name, fontsize=12) # Added to all plots
             
-            # Dynamic margins to prevent clipping
-            y_margin = (np.max(y_data) - np.min(y_data)) * 0.1
-            if y_margin == 0: y_margin = abs(np.max(y_data)) * 0.1 if np.max(y_data) != 0 else 0.1
-            ax.set_ylim(np.min(y_data) - y_margin, np.max(y_data) + y_margin)
+            # Dynamic margins to prevent clipping. nanmax/nanmin ignore any
+            # missing (NaN) values so a metric that wasn't determined for
+            # some simulations doesn't break the axis limits.
+            y_margin = (np.nanmax(y_data) - np.nanmin(y_data)) * 0.1
+            if y_margin == 0 or np.isnan(y_margin):
+                ref = np.nanmax(y_data)
+                y_margin = abs(ref) * 0.1 if ref else 0.1
+            ax.set_ylim(np.nanmin(y_data) - y_margin, np.nanmax(y_data) + y_margin)
             
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
@@ -150,9 +162,11 @@ class line_sweeper():
             ax.set_ylabel(ylabel, fontsize=12)
             ax.set_xlabel(self.parameter_name, fontsize=12) # Added to all plots
             
-            y_margin = (np.max(y_data) - np.min(y_data)) * 0.1
-            if y_margin == 0: y_margin = abs(np.max(y_data)) * 0.1 if np.max(y_data) != 0 else 0.1
-            ax.set_ylim(np.min(y_data) - y_margin, np.max(y_data) + y_margin)
+            y_margin = (np.nanmax(y_data) - np.nanmin(y_data)) * 0.1
+            if y_margin == 0 or np.isnan(y_margin):
+                ref = np.nanmax(y_data)
+                y_margin = abs(ref) * 0.1 if ref else 0.1
+            ax.set_ylim(np.nanmin(y_data) - y_margin, np.nanmax(y_data) + y_margin)
             
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
@@ -281,27 +295,36 @@ class brane_sweeper():
             try:
                 print(f"Solving for simulation: {simulation}")
                 simulator = self.simulator(simulation)
+
+                # Convert any None values to np.nan on the way in. If these stay
+                # as None, np.array() below silently produces an object-dtype
+                # array (mixed float/None), and later plotting code that
+                # compares/reduces these values (np.nanmin, hist, etc.) blows
+                # up with "'<=' not supported between float and NoneType".
+                # Keeping everything as float/np.nan avoids that entirely.
+                def _clean(value):
+                    return value if value is not None else np.nan
+
                 self.dom_a.append(simulator.dom_a)
-                self.dom_a_growth.append(simulator.dom_a_growth)
-                self.dom_a_linstart.append(simulator.dom_a_linstart)
-                self.dom_a_linend.append(simulator.dom_a_linend)
+                self.dom_a_growth.append(_clean(simulator.dom_a_growth))
+                self.dom_a_linstart.append(_clean(simulator.dom_a_linstart))
+                self.dom_a_linend.append(_clean(simulator.dom_a_linend))
                 
                 self.dom_g.append(simulator.dom_g)
-                self.dom_g_growth.append(simulator.dom_g_growth)
-                self.dom_g_linstart.append(simulator.dom_g_linstart)
-                self.dom_g_linend.append(simulator.dom_g_linend)
+                self.dom_g_growth.append(_clean(simulator.dom_g_growth))
+                self.dom_g_linstart.append(_clean(simulator.dom_g_linstart))
+                self.dom_g_linend.append(_clean(simulator.dom_g_linend))
                 
-                self.breakout_time.append(
-                    simulator.breakout_time if simulator.breakout_time is not None else np.nan
-                )
+                self.breakout_time.append(_clean(simulator.breakout_time))
                 
                 #Debug mode control flows. Dump all diagnostics for chosen intervals.
                 if self.debug and (i % self.debug_interval == 0):
                     print(f"[debug] Saving single-sim diagnostics for simulation: {simulation}")
-                    simulator.mode_plotter(save=True, show=False, save_dir=self.debug_dir)
-                    simulator.timing_line_map_plotter(save=True, show=False, save_dir=self.debug_dir)
-                    simulator.grid_diagonistics(save=True, show=False, save_dir=self.debug_dir)
-                    simulator.growth_rate_plotter(save=True, show=False, save_dir=self.debug_dir)
+                    #simulator.mode_plotter(save=True, show=True, save_dir=self.debug_dir)
+                    #simulator.timing_line_map_plotter(save=True, show=False, save_dir=self.debug_dir)
+                    #simulator.grid_diagonistics(save=True, show=True, save_dir=self.debug_dir)
+                    #simulator.growth_rate_plotter(save=True, show=False, save_dir=self.debug_dir)
+                    simulator.dominant_mode_fit_plotter(save=True, show=True, save_dir = self.debug_dir)
             except FileNotFoundError:
                 print(f"File not found for simulation: {i}, Skipping the loading process.")
                 continue
@@ -316,6 +339,25 @@ class brane_sweeper():
         self.dom_g_linend = np.array(self.dom_g_linend)
         
         self.breakout_time = np.array(self.breakout_time)
+
+    #### CALCULATION: Determine which parameter dimensions actually vary ####
+    def _active_dimensions(self):
+        """
+        Inspects self.parameters and returns the indices of dimensions that
+        contain more than one unique value ("active" dimensions), along with
+        the count of such dimensions.
+
+        A parameter space of shape (x, y, 1, 1, ..., 1) has only 2 active
+        dimensions even though it is stored as an n-dimensional array - the
+        singleton dimensions carry no information and should not count
+        towards higher-dimensional classification (e.g. triggering the
+        tiled 4D summary plots).
+        """
+        active_indices = [
+            i for i in range(self.parameters.shape[1])
+            if len(np.unique(self.parameters[:, i])) > 1
+        ]
+        return active_indices, len(active_indices)
 
     #### PLOT: Draws a scatter matrix (helper function for corner plots) ####
     def _draw_scatter_matrix(self, data, labels, scales, title, color):
@@ -344,16 +386,37 @@ class brane_sweeper():
                     
                 # Diagonal: Histograms
                 elif i == j:
+                    # Drop NaNs (e.g. simulations where this metric was never
+                    # determined) so hist() doesn't choke on a non-finite range.
+                    col_i = data[:, i]
+                    finite_i = col_i[np.isfinite(col_i)]
+
+                    if finite_i.size == 0:
+                        # Nothing plottable for this metric - leave the panel blank
+                        # rather than crashing on an all-NaN column.
+                        ax.text(0.5, 0.5, "No data", ha='center', va='center',
+                                fontsize=9, color='gray', transform=ax.transAxes)
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        ax.spines['top'].set_visible(False)
+                        ax.spines['right'].set_visible(False)
+                        ax.spines['left'].set_visible(False)
+                        if i == dim - 1:
+                            ax.set_xlabel(labels[j], fontsize=11, fontweight='medium')
+                        if j == 0 and i > 0:
+                            ax.set_ylabel(labels[i], fontsize=11, fontweight='medium')
+                        continue
+
                     if scales[i] == 'log':
                         ax.set_xscale('log')
-                        d_min, d_max = np.nanmin(data[:, i]), np.nanmax(data[:, i])
+                        d_min, d_max = np.nanmin(finite_i), np.nanmax(finite_i)
                         if d_min <= 0: d_min = 1e-10
-                        bins = np.logspace(np.log10(d_min), np.log10(d_max), max(4, min(10, len(data)//2)))
+                        bins = np.logspace(np.log10(d_min), np.log10(d_max), max(4, min(10, len(finite_i)//2 or 1)))
                     else:
                         # Added edge color and dynamic bins for better visibility
-                        bins = max(4, min(10, len(data)//2))
+                        bins = max(4, min(10, len(finite_i)//2 or 1))
                         
-                    ax.hist(data[:, i], bins=bins, color=color, alpha=0.75, edgecolor='black', linewidth=1.2)
+                    ax.hist(finite_i, bins=bins, color=color, alpha=0.75, edgecolor='black', linewidth=1.2)
                     ax.spines['top'].set_visible(False)
                     ax.spines['right'].set_visible(False)
                     ax.spines['left'].set_visible(False)
@@ -367,9 +430,13 @@ class brane_sweeper():
                         ax.set_xscale('log')
                     if scales[i] == 'log':
                         ax.set_yscale('log')
-                        
-                    # Upgraded marker styling
-                    ax.scatter(data[:, j], data[:, i], color=color, s=60, alpha=0.7, edgecolors='black', linewidths=0.8, zorder=5)
+
+                    # Only plot points where both coordinates are finite, so a
+                    # NaN in either column just quietly drops that point
+                    # instead of raising or corrupting the axis limits.
+                    pair_mask = np.isfinite(data[:, j]) & np.isfinite(data[:, i])
+                    ax.scatter(data[pair_mask, j], data[pair_mask, i], color=color, s=60, alpha=0.7,
+                               edgecolors='black', linewidths=0.8, zorder=5)
                     ax.grid(True, linestyle=':', alpha=0.6, zorder=0)
                     ax.spines['top'].set_visible(False)
                     ax.spines['right'].set_visible(False)
@@ -401,7 +468,7 @@ class brane_sweeper():
         return fig
 
     #### PLOT: Draws a tiled grid of scatter plots (Wavelength vs Intensity) ####
-    def _draw_tiled_grid(self, metric_data, metric_label, title, cmap='turbo'):
+    def _draw_tiled_grid(self, metric_data, metric_label, title, cmap='turbo', vmax_cap=None):
         try:
             wave_name = "Wavelength (μm)" if "Wavelength (μm)" in self.parameter_names else "Wavelength"
             wave_idx = self.parameter_names.index(wave_name)
@@ -409,7 +476,11 @@ class brane_sweeper():
             int_idx = self.parameter_names.index("Peak Intensity")
             thick_idx = self.parameter_names.index("Thickness")
         except ValueError:
-            wave_idx, cont_idx, int_idx, thick_idx = 0, 1, 2, 3
+            # Fall back to whichever dimensions are actually active (varying)
+            # rather than blindly assuming the first four columns.
+            active_indices, _ = self._active_dimensions()
+            fallback = (active_indices + [0, 1, 2, 3])[:4]
+            wave_idx, cont_idx, int_idx, thick_idx = fallback
 
         unique_thick = np.unique(self.parameters[:, thick_idx])
         unique_cont = np.unique(self.parameters[:, cont_idx])
@@ -423,6 +494,9 @@ class brane_sweeper():
 
         vmin = np.nanmin(metric_data)
         vmax = np.nanmax(metric_data)
+        
+        if vmax_cap is not None:
+            vmax = min(vmax, vmax_cap)
 
         for i, thick in enumerate(unique_thick):
             for j, cont in enumerate(unique_cont):
@@ -461,13 +535,135 @@ class brane_sweeper():
         fig.suptitle(title, fontsize=18, fontweight='bold', y=0.96)
         return fig
 
+    #### PLOT: Draws a 2D heatmap over the two active parameter dimensions ####
+    def _draw_2d_heatmap(self, active_indices, metric_data, metric_label, title, cmap='turbo', vmax_cap=None):
+        """
+        Draws a 2D heatmap of metric_data over the two active parameter dimensions.
+        """
+        # --- NEW SAFTEY CHECK: Handle metrics where no data exists (e.g. no breakouts) ---
+        if np.all(np.isnan(metric_data)):
+            print(f"Warning: No valid data for '{title}'. Generating blank placeholder.")
+            fig, ax = plt.subplots(figsize=(7, 6))
+            ax.text(0.5, 0.5, "No valid data\n(e.g., no breakouts detected)", 
+                    ha='center', va='center', fontsize=12, color='gray')
+            ax.set_title(f"{title} (Heatmap)", fontsize=14, fontweight='bold', pad=10)
+            ax.axis('off')
+            return fig
+
+        ix, iy = active_indices
+        x = self.parameters[:, ix]
+        y = self.parameters[:, iy]
+        ux = np.unique(x)
+        uy = np.unique(y)
+
+        fig, ax = plt.subplots(figsize=(7, 6))
+
+        vmin = np.nanmin(metric_data)
+        vmax = np.nanmax(metric_data)
+        
+        if vmax_cap is not None:
+            vmax = min(vmax, vmax_cap)
+
+        if len(ux) * len(uy) == len(x):
+            grid = np.full((len(uy), len(ux)), np.nan)
+            for xi, yi, val in zip(x, y, metric_data):
+                row = np.where(uy == yi)[0][0]
+                col = np.where(ux == xi)[0][0]
+                grid[row, col] = val
+            mesh = ax.pcolormesh(ux, uy, grid, cmap=cmap, vmin=vmin, vmax=vmax, shading='auto', edgecolors='black', linewidth=0.3)
+            cbar = fig.colorbar(mesh, ax=ax)
+        else:
+            sc = ax.scatter(x, y, c=metric_data, cmap=cmap, vmin=vmin, vmax=vmax, s=140, edgecolors='black', linewidths=0.8, zorder=5)
+            cbar = fig.colorbar(sc, ax=ax)
+
+        if self.parameter_scales[ix] == 'log':
+            ax.set_xscale('log')
+        if self.parameter_scales[iy] == 'log':
+            ax.set_yscale('log')
+
+        ax.set_xlabel(self.parameter_names[ix], fontsize=12)
+        ax.set_ylabel(self.parameter_names[iy], fontsize=12)
+        ax.set_title(f"{title} (Heatmap)", fontsize=14, fontweight='bold', pad=10)
+        cbar.set_label(metric_label, fontsize=12, fontweight='bold')
+
+        fig.tight_layout()
+        return fig
+
+    #### PLOT: Draws a 3D surface over the two active parameter dimensions ####
+    def _draw_2d_surface(self, active_indices, metric_data, metric_label, title, cmap='turbo', vmax_cap=None):
+        """
+        Draws a 3D surface of metric_data over the two active parameter dimensions.
+        """
+        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+        
+        # --- NEW SAFTEY CHECK: Handle metrics where no data exists (e.g. no breakouts) ---
+        if np.all(np.isnan(metric_data)):
+            fig = plt.figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            ax.text(0.5, 0.5, "No valid data\n(e.g., no breakouts detected)", 
+                    ha='center', va='center', fontsize=12, color='gray')
+            ax.set_title(f"{title} (3D Surface)", fontsize=14, fontweight='bold', pad=10)
+            ax.axis('off')
+            return fig
+
+        ix, iy = active_indices
+        x = self.parameters[:, ix]
+        y = self.parameters[:, iy]
+        ux = np.unique(x)
+        uy = np.unique(y)
+
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111, projection='3d')
+
+        vmin = np.nanmin(metric_data)
+        vmax = np.nanmax(metric_data)
+        
+        if vmax_cap is not None:
+            vmax = min(vmax, vmax_cap)
+
+        if len(ux) * len(uy) == len(x):
+            X, Y = np.meshgrid(ux, uy)
+            Z = np.full(X.shape, np.nan)
+            for xi, yi, val in zip(x, y, metric_data):
+                row = np.where(uy == yi)[0][0]
+                col = np.where(ux == xi)[0][0]
+                Z[row, col] = val
+            surf = ax.plot_surface(X, Y, Z, cmap=cmap, vmin=vmin, vmax=vmax, edgecolor='k', linewidth=0.3, alpha=0.9)
+        else:
+            try:
+                surf = ax.plot_trisurf(x, y, metric_data, cmap=cmap, vmin=vmin, vmax=vmax, edgecolor='k', linewidth=0.2, alpha=0.9)
+            except RuntimeError as e:
+                if "singular input data" in str(e):
+                    print(f"Warning: Could not triangulate 3D surface for '{title}'. "
+                          f"Falling back to a 3D scatter plot.")
+                    surf = ax.scatter(x, y, metric_data, c=metric_data, cmap=cmap, vmin=vmin, vmax=vmax, s=60, edgecolors='k', alpha=0.9)
+                else:
+                    raise e
+
+        # Apply log scales if requested
+        if self.parameter_scales[ix] == 'log':
+            ax.set_xscale('log')
+        if self.parameter_scales[iy] == 'log':
+            ax.set_yscale('log')
+
+        ax.set_xlabel(self.parameter_names[ix], fontsize=11)
+        ax.set_ylabel(self.parameter_names[iy], fontsize=11)
+        ax.set_zlabel(metric_label, fontsize=11)
+        ax.set_title(f"{title} (3D Surface)", fontsize=14, fontweight='bold', pad=10)
+
+        cbar = fig.colorbar(surf, ax=ax, shrink=0.6, pad=0.1)
+        cbar.set_label(metric_label, fontsize=11, fontweight='bold')
+
+        fig.tight_layout()
+        return fig
+
     #### PLOT: Plots data for the amplitude dominant mode ####
     def dominant_mode(self, show=True, save=False):
         # Added the original line_sweeper colors as the 4th item in the tuple
         metrics = [
             (self.dom_a_growth, r"Growth Rate $\gamma$ (s$^{-1}$)", "Growth Rate", '#1f77b4'),     # Blue
-            (self.dom_a_linstart, "Start Time (s)", "Linear Start Time", '#2ca02c'),              # Green
-            (self.dom_a_linend, "Saturation Time (s)", "Saturation Time", '#d62728')              # Red
+            (self.dom_a_linstart, "Start Time (s)", "Linear Start Time", '#2ca02c'),               # Green
+            (self.dom_a_linend, "Saturation Time (s)", "Saturation Time", '#d62728')               # Red
         ]
         
         scales = self.parameter_scales + ['linear']
@@ -524,17 +720,68 @@ class brane_sweeper():
         if show:
             plt.show()
 
-    #### PLOT: Tiled Grid Summary Plots for all major metrics ####
+    #### PLOT: Dispatches to the appropriate dimensionality-aware summary plots ####
     def tiled_summary_plots(self, show=True, save=False):
+        """
+        Generates summary plots for the metrics of interest, but only after
+        classifying the *effective* dimensionality of the parameter space:
+
+        - Dimensions with only a single unique value ("singleton" dimensions,
+          e.g. a sweep shaped (x, y, 1, ..., 1)) carry no information and are
+          ignored when classifying dimensionality.
+        - Exactly 2 active dimensions -> effectively a 2D parameter space.
+          Triggers 2D heatmap + 3D surface plots instead of the tiled grid.
+        - Exactly 4 active dimensions -> triggers the tiled 4D summary grid
+          (as before).
+        - Anything else (1, 3, 5+ active dimensions) -> the tiled/2D summary
+          plots are skipped since neither is well defined; corner plots
+          (dominant_mode / growth_mode / breakout_time_plot) remain
+          unaffected and always work regardless of dimensionality.
+        """
+        active_indices, n_active = self._active_dimensions()
+
+        if n_active == 2:
+            print("Detected a 2D parameter space - generating 2D heatmap and 3D surface plots.")
+            self._plot_2d_summary(active_indices, show=show, save=save)
+            return
+        elif n_active != 4:
+            print(f"Tiled summary plot skipped: requires exactly 4 active "
+                  f"(non-degenerate) dimensions or exactly 2 for the 2D mode, "
+                  f"but {n_active} active dimension(s) were detected. "
+                  f"Corner plots (dominant_mode / growth_mode / breakout_time_plot) "
+                  f"are unaffected and can still be used.")
+            return
+
+        print("Detected a 4D parameter space - generating tiled summary plots.")
         metrics = [
-            (self.dom_a_growth, "Growth Rate $\gamma$ (s⁻¹)", "Amplitude Dominant Mode Growth Rate", 'turbo'),
-            (self.dom_g_growth, "Growth Rate $\gamma$ (s⁻¹)", "Growth Dominant Mode Growth Rate", 'turbo'),
-            (self.breakout_time, "Breakout Time (s)", "Breakout Time", 'plasma')
+            (self.dom_a_growth, "Growth Rate $\gamma$ (s⁻¹)", "Amplitude Dominant Mode Growth Rate", 'turbo', 2e12),
+            (self.dom_g_growth, "Growth Rate $\gamma$ (s⁻¹)", "Growth Dominant Mode Growth Rate", 'turbo', 2e12),
+            (self.breakout_time, "Breakout Time (s)", "Breakout Time", 'plasma', None)
         ]
 
-        for metric_data, metric_label, title, cmap in metrics:
-            fig = self._draw_tiled_grid(metric_data, metric_label, title, cmap=cmap)
+        for metric_data, metric_label, title, cmap, vmax_cap in metrics:
+            fig = self._draw_tiled_grid(metric_data, metric_label, title, cmap=cmap, vmax_cap=vmax_cap)
             if save:
                 fig.savefig(f"tiled_{title.replace(' ', '_').lower()}.png", dpi=300, bbox_inches='tight')
+        if show:
+            plt.show()
+
+    #### PLOT: 2D-mode summary (heatmap + 3D surface) for each metric ####
+    def _plot_2d_summary(self, active_indices, show=True, save=False):
+        metrics = [
+            (self.dom_a_growth, r"Growth Rate $\gamma$ (s$^{-1}$)", "Amplitude Dominant Mode Growth Rate", 'turbo', 2e12),
+            (self.dom_g_growth, r"Growth Rate $\gamma$ (s$^{-1}$)", "Growth Dominant Mode Growth Rate", 'turbo', 2e12),
+            (self.breakout_time, "Breakout Time (s)", "Breakout Time", 'plasma', None)
+        ]
+
+        for metric_data, metric_label, title, cmap, vmax_cap in metrics:
+            fig_heat = self._draw_2d_heatmap(active_indices, metric_data, metric_label, title, cmap=cmap, vmax_cap=vmax_cap)
+            if save:
+                fig_heat.savefig(f"2d_heatmap_{title.replace(' ', '_').lower()}.png", dpi=300, bbox_inches='tight')
+
+            fig_surf = self._draw_2d_surface(active_indices, metric_data, metric_label, title, cmap=cmap, vmax_cap=vmax_cap)
+            if save:
+                fig_surf.savefig(f"2d_surface_{title.replace(' ', '_').lower()}.png", dpi=300, bbox_inches='tight')
+
         if show:
             plt.show()
