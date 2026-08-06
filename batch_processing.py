@@ -45,6 +45,7 @@ class line_sweeper():
         # Initializing lists for amplitude dominant mode.
         self.dom_a = []
         self.dom_a_growth = []
+        self.dom_a_growth_err = []
         self.dom_a_linstart = []
         self.dom_a_linend = []
 
@@ -78,6 +79,10 @@ class line_sweeper():
 
             self.dom_a.append(simulator.dom_a)
             self.dom_a_growth.append(_clean(simulator.dom_a_growth))
+            # Window-sensitivity error bar on k for the amplitude dominant mode.
+            # getattr fallback keeps this compatible with any simulator class
+            # that hasn't been updated to compute dom_a_growth_err yet.
+            self.dom_a_growth_err.append(_clean(getattr(simulator, "dom_a_growth_err", None)))
             self.dom_a_linstart.append(_clean(simulator.dom_a_linstart))
             self.dom_a_linend.append(_clean(simulator.dom_a_linend))
             self.dom_g.append(simulator.dom_g)
@@ -95,6 +100,7 @@ class line_sweeper():
         
         #Converting the 1D lists into arrays
         self.dom_a_growth = np.array(self.dom_a_growth)
+        self.dom_a_growth_err = np.array(self.dom_a_growth_err)
         self.dom_a_linstart = np.array(self.dom_a_linstart)
         self.dom_a_linend = np.array(self.dom_a_linend)
         self.dom_g_growth = np.array(self.dom_g_growth)
@@ -108,8 +114,15 @@ class line_sweeper():
         fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         
         # --- Helper function for consistent styling across subplots ---
-        def style_subplot(ax, y_data, ylabel, title, color, marker):
-            ax.plot(self.parameters, y_data, color=color, linewidth=2.5, marker=marker, markersize=8)
+        def style_subplot(ax, y_data, ylabel, title, color, marker, yerr=None):
+            if yerr is not None:
+                # Growth Rate panel: draw with error bars from the window
+                # sensitivity study instead of a bare line.
+                ax.errorbar(self.parameters, y_data, yerr=yerr, color=color, linewidth=2.5,
+                            marker=marker, markersize=8, capsize=4, ecolor=color,
+                            elinewidth=1.5, alpha=0.9)
+            else:
+                ax.plot(self.parameters, y_data, color=color, linewidth=2.5, marker=marker, markersize=8)
             ax.fill_between(self.parameters, y_data, color=color, alpha=0.15)
             
             ax.grid(True, linestyle='--', alpha=0.6, zorder=0)
@@ -129,9 +142,9 @@ class line_sweeper():
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
         
-        # 1. Growth Rate
+        # 1. Growth Rate (now shown with window-sensitivity error bars)
         style_subplot(axes[0], self.dom_a_growth, "Growth Rate, $\gamma$ (s⁻¹)", 
-                      "1. Growth Rate", '#1f77b4', 'o')
+                      "1. Growth Rate", '#1f77b4', 'o', yerr=self.dom_a_growth_err)
         
         # 2. Linear Start Time
         style_subplot(axes[1], self.dom_a_linstart, "Time (s)", 
@@ -277,6 +290,7 @@ class brane_sweeper():
         #Initializing lists for amplitude dominant mode.
         self.dom_a = []
         self.dom_a_growth = []
+        self.dom_a_growth_err = []
         self.dom_a_linstart = []
         self.dom_a_linend = []
         
@@ -307,6 +321,11 @@ class brane_sweeper():
 
                 self.dom_a.append(simulator.dom_a)
                 self.dom_a_growth.append(_clean(simulator.dom_a_growth))
+                # Window-sensitivity error bar on k for the amplitude dominant mode
+                # (the "trust" metric downstream is derived from this). getattr
+                # fallback keeps compatibility with simulator classes that don't
+                # compute dom_a_growth_err.
+                self.dom_a_growth_err.append(_clean(getattr(simulator, "dom_a_growth_err", None)))
                 self.dom_a_linstart.append(_clean(simulator.dom_a_linstart))
                 self.dom_a_linend.append(_clean(simulator.dom_a_linend))
                 
@@ -331,6 +350,7 @@ class brane_sweeper():
                 
         #Convert list to arrays for futher plotting, etc.
         self.dom_a_growth = np.array(self.dom_a_growth)
+        self.dom_a_growth_err = np.array(self.dom_a_growth_err)
         self.dom_a_linstart = np.array(self.dom_a_linstart)
         self.dom_a_linend = np.array(self.dom_a_linend)
         
@@ -339,6 +359,19 @@ class brane_sweeper():
         self.dom_g_linend = np.array(self.dom_g_linend)
         
         self.breakout_time = np.array(self.breakout_time)
+
+        # Percentage variation in k from the window sensitivity study - this is
+        # our "trust" metric for the dominant-mode growth rate: error / actual
+        # growth rate * 100. Guard against divide-by-zero/NaN growth rates
+        # producing warnings; those entries will just come out as NaN/inf,
+        # which the heatmap/surface plotting helpers already know how to
+        # handle (all-NaN guard) or which we clean up below.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            self.dom_a_growth_pct_err = np.abs(self.dom_a_growth_err / self.dom_a_growth) * 100
+        # Any infinities (e.g. growth rate of exactly 0 with a nonzero error)
+        # aren't meaningful on a bounded color scale - fold them into NaN so
+        # they get skipped/blanked the same way missing data already is.
+        self.dom_a_growth_pct_err[np.isinf(self.dom_a_growth_pct_err)] = np.nan
 
     #### CALCULATION: Determine which parameter dimensions actually vary ####
     def _active_dimensions(self):
@@ -737,6 +770,12 @@ class brane_sweeper():
           plots are skipped since neither is well defined; corner plots
           (dominant_mode / growth_mode / breakout_time_plot) remain
           unaffected and always work regardless of dimensionality.
+
+        NOTE: The growth-dominant-mode growth rate panel that used to appear
+        here has been replaced with the dominant-mode window-sensitivity
+        percentage error (dom_a_growth_pct_err), i.e. the "trust" metric for
+        the growth rate: |error / growth rate| * 100. growth_mode() itself
+        (the standalone corner-plot method above) is unaffected.
         """
         active_indices, n_active = self._active_dimensions()
 
@@ -754,8 +793,8 @@ class brane_sweeper():
 
         print("Detected a 4D parameter space - generating tiled summary plots.")
         metrics = [
-            (self.dom_a_growth, "Growth Rate $\gamma$ (s⁻¹)", "Amplitude Dominant Mode Growth Rate", 'turbo', 2e12),
-            (self.dom_g_growth, "Growth Rate $\gamma$ (s⁻¹)", "Growth Dominant Mode Growth Rate", 'turbo', 2e12),
+            (self.dom_a_growth, "Growth Rate $\gamma$ (s⁻¹)", "Amplitude Dominant Mode Growth Rate", 'turbo', 1e11),
+            (self.dom_a_growth_pct_err, "% Variation in k", "Growth Rate Window-Sensitivity Error", 'magma', 100),
             (self.breakout_time, "Breakout Time (s)", "Breakout Time", 'plasma', None)
         ]
 
@@ -769,8 +808,8 @@ class brane_sweeper():
     #### PLOT: 2D-mode summary (heatmap + 3D surface) for each metric ####
     def _plot_2d_summary(self, active_indices, show=True, save=False):
         metrics = [
-            (self.dom_a_growth, r"Growth Rate $\gamma$ (s$^{-1}$)", "Amplitude Dominant Mode Growth Rate", 'turbo', 2e12),
-            (self.dom_g_growth, r"Growth Rate $\gamma$ (s$^{-1}$)", "Growth Dominant Mode Growth Rate", 'turbo', 2e12),
+            (self.dom_a_growth, r"Growth Rate $\gamma$ (s$^{-1}$)", "Amplitude Dominant Mode Growth Rate", 'turbo', 2e11),
+            (self.dom_a_growth_pct_err, "% Variation in k", "Growth Rate Window-Sensitivity Error", 'magma', 100),
             (self.breakout_time, "Breakout Time (s)", "Breakout Time", 'plasma', None)
         ]
 
