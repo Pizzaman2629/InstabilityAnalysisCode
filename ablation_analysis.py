@@ -1,4 +1,10 @@
-""" ablation_analysis.py Code created by Lavya. Uses Chimera Reader (added to repository) Companion module to simulation_analysis.py, real-space ablation front analysis mode. """ 
+""" 
+ablation_analysis.py Code created by Lavya. 
+Uses Chimera Reader (added to repository) 
+Primary analysis method, more trustworth than simultion_analysis.py.
+
+Uses ablation front tracking to calculate growth rates, etc.
+""" 
 import numpy as np 
 import reader 
 import os 
@@ -10,12 +16,14 @@ from scipy.signal import savgol_filter, find_peaks
 from scipy.interpolate import interp1d 
 
 class Front_Sim(): 
-    def __init__(self, simulation, ROOTDIR, project, start_step, final_step, step_interval, dump_freq, burn_in=0, min_window=10, r2_threshold = 0.98, axial="x", transverse="y", depth="z", solid_drop_threshold=0.5, breakout=False, breakout_threshold=0.03, cell_threshold=0, boundary_pad_cells=3, edge_buffer_cells=3, terminate_on_breakout=True, min_x_search=None, vis_front=True, vis_front_step=200, search_right_cells=10, target_thickness=100e-6, streak=False, streak_domain=None, streak_dump=None, streakbreakout=False, streakbreakout_domain=None, time_file=False): 
+    def __init__(self, simulation, ROOTDIR, project, start_step, final_step, step_interval, dump_freq, burn_in=0, min_window=10, r2_threshold = 0.98, axial="x", transverse="y", depth="z", solid_drop_threshold=0.5, breakout=False, breakout_threshold=0.03, cell_threshold=0, boundary_pad_cells=3, edge_buffer_cells=3, terminate_on_breakout=True, min_x_search=None, vis_front=True, vis_front_step=200, search_right_cells=10, target_thickness=100e-6, streak=False, streak_domain=None, streak_dump=None, streakbreakout=False, streakbreakout_domain=None, time_file=False, time_stop=None, window_sweep_points=5, window_sweep_stride=1): 
         """
         Class: Front_Sim. 
-        This class is used to load data from a single simulation directory, real-space companion to Single_Sim. 
-        Instead of integrating out the axial coordinate and Fourier transforming the profile, this tracks the ablation front position as a 
-        function of the transverse coordinate directly. 
+        Used to track the ablation front and do the relevant data processing. 
+
+        Includes:
+        1.) Growth Rate Calculations based on linear region detection. 
+        2.) Sensitivity studies for fit certainties.
         """ 
         #Loading simulation information. 
         self.simulation = simulation 
@@ -63,6 +71,11 @@ class Front_Sim():
             self.timesteps = np.round(self.times / self.streak_dump).astype(int) 
             self.timesteps[0] = 0 
             
+        if time_stop is not None:
+            valid_t_idx = np.where(self.times <= time_stop)[0]
+            self.times = self.times[valid_t_idx]
+            self.timesteps = self.timesteps[valid_t_idx]
+            
         #Create timesteps to visualize the 2D density. 
         self.vis_front = vis_front 
         self.vis_front_timesteps = np.arange(start_step, final_step, vis_front_step) 
@@ -78,6 +91,10 @@ class Front_Sim():
         self.min_x_search = min_x_search 
         self.search_right_cells = search_right_cells 
         self.target_thickness = target_thickness 
+
+        #Window sensitivity study settings (end-index sweep for the dominant mode fit).
+        self.window_sweep_points = window_sweep_points
+        self.window_sweep_stride = window_sweep_stride 
         
         #Assign variables for integration, interface and slicing. 
         self.interface = transverse 
@@ -105,7 +122,82 @@ class Front_Sim():
         self.wavelength = (self.yc.max() - self.yc.min())/2 
         self.amp_t = np.abs(np.max(self.front_t, axis=1) - np.min(self.front_t, axis=1)) 
         
-        self.valid_a_x_t = self.amp_t.reshape(-1, 1) 
+        #IMPORTANT: Raw Data Processing.
+        #Scan for massive grid/vacuum drops on the RAW data before any filtering.
+        #If it drops by more than 1 OOM and recovers later, bridge it smoothly.
+        i = 0
+        #Stepping using a while loop. (NOTE: This can maybe be optimized somehow for compute, but its fine for now)
+        #The while loop ensures stepping only when necessary with the loop terminating as soon as a bridge is complete.
+        while i < len(self.amp_t) - 1:
+            val_curr = max(self.amp_t[i], 1e-16) #Current amplitude value
+            val_next = max(self.amp_t[i+1], 1e-16) #Next amplitude value.
+
+            #Check if there is a drop of more than a 1 order of magnitude.
+            if np.log(val_curr) - np.log(val_next) > np.log(10):
+                #Recovery index is where the value first gets out of the valley of despair.
+                recovery_idx = -1
+                for j in range(i + 1, len(self.amp_t)):
+                    if max(self.amp_t[j], 1e-16) >= val_curr:
+                        recovery_idx = j
+                        break
+
+                #If the recovery index is not the final index, bridge from the start index to the recovery index.
+                if recovery_idx != -1:
+                    log_start = np.log(val_curr)
+                    log_end = np.log(max(self.amp_t[recovery_idx], 1e-16))
+                    for k in range(i + 1, recovery_idx):
+                        interp_log = log_start + (log_end - log_start) * ((k - i) / (recovery_idx - i))
+                        self.amp_t[k] = np.exp(interp_log)
+                    i = recovery_idx
+                else:
+                    i += 1
+            else:
+                i += 1
+
+        #Loop through all indices in the raw amplitude and check if there are any flat areas. 
+        #If there are flat areas, then substitute them with a straight line going to the next non-flat area.
+        i = 0
+        while i < len(self.amp_t) - 1:
+            if self.amp_t[i] == self.amp_t[i+1]:
+                plateau_end = i + 1
+                #Walk forward to find the end of the flat plateau
+                while plateau_end < len(self.amp_t) and self.amp_t[plateau_end] == self.amp_t[i]:
+                    plateau_end += 1
+                
+                #If the plateau ends before the array does, we linearly interpolate the gap
+                if plateau_end < len(self.amp_t):
+                    val_start = self.amp_t[i]
+                    val_end = self.amp_t[plateau_end]
+                    for k in range(i + 1, plateau_end):
+                        fraction = (k - i) / (plateau_end - i)
+                        self.amp_t[k] = val_start + fraction * (val_end - val_start)
+                i = plateau_end
+            else:
+                i += 1
+
+        #Smooth out grid-snapping jitter of ~2*dx size to create a continuous curve.
+        #Large jumps (like initialization cliffs) bypass the filter and stay raw.
+        self.smoothed_amp_t = np.copy(self.amp_t)
+        smooth_window = min(self.min_window, len(self.amp_t))
+        if smooth_window % 2 == 0: smooth_window -= 1
+        if smooth_window > 3:
+            base_smoothed = savgol_filter(self.amp_t, window_length=smooth_window, polyorder=2)
+            last_valid_amp = max(self.amp_t[0], 1e-16)  #Track the last safe amplitude
+            for i in range(len(self.amp_t)):
+                if np.abs(self.amp_t[i] - base_smoothed[i]) <= 2.5 * self.dx_uniform:
+                    if base_smoothed[i] <= 1e-16:
+                        #Prevent cavernous drops: hold the last valid value instead of dipping negative
+                        self.smoothed_amp_t[i] = last_valid_amp
+                    else:
+                        self.smoothed_amp_t[i] = base_smoothed[i]
+                        last_valid_amp = base_smoothed[i]
+                else:
+                    self.smoothed_amp_t[i] = self.amp_t[i]
+                    if self.amp_t[i] > 1e-16:
+                        last_valid_amp = self.amp_t[i]
+                    
+        self.valid_a_x_t = self.smoothed_amp_t.reshape(-1, 1) 
+        self.raw_a_x_t = self.amp_t.reshape(-1, 1)
         self.wavelengths_m = np.array([self.wavelength]) 
         
         #Get growth rates using linear region detector 
@@ -127,8 +219,22 @@ class Front_Sim():
             self.dom_a_growth = np.nan 
             self.dom_a_linstart = None 
             self.dom_a_linend = None 
+
+        #Window sensitivity study: only performed/saved for the amplitude dominant mode
+        #Vary the end index and get a series of possible slopes for a known linear fit.
+        #Take the standard deviation of the slope to get what we need.
+        if self.start_indices[self.amp_dom_idx] != -1 and self.end_indices[self.amp_dom_idx] < len(self.times): 
+            self.dom_a_growth_err = self.compute_window_sensitivity( 
+                self.amp_dom_idx, 
+                self.start_indices[self.amp_dom_idx], 
+                self.end_indices[self.amp_dom_idx], 
+                n_points=self.window_sweep_points, 
+                stride=self.window_sweep_stride 
+            ) 
+        else: 
+            self.dom_a_growth_err = np.nan 
             
-        #Similarly, get the data for the max growth mode, if data doesn't exist, set to NaN value. 
+        #Get the data for the max growth mode, if data doesn't exist, set to NaN value. 
         growth_dom_idx = 0 
         self.dom_g = self.valid_a_x_t[:, growth_dom_idx] 
         self.dom_g_growth = self.growth_rates[growth_dom_idx] 
@@ -413,14 +519,14 @@ class Front_Sim():
             plt.show() 
 
     #### CALCULATION: Linear Region Detector #### 
-    def find_anchored_linear_region(self, t_sliced, log_amp_sliced, min_window=10, r2_threshold=0.98): 
+    def find_anchored_linear_region(self, t_sliced, log_amp_sliced, raw_log_amp=None, min_window=10, r2_threshold=0.98): 
         """ 
         Function to calculate the linear region for a singular mode. 
         
         NOTE: This is probably THE most iffy function, so when doing analysis make sure to optimize it nicely.
          
-        NOTE: There is also a chance the second order derivative method may break for some fits, which is why it is good 
-            practice to always visualize the fits with the plotting tools provided in the class. 
+        NOTE: Some of the methods here are geared towards the specific dataset we are working (for example the unsafe start procedure)
+            These need to be given attention to.
         """ 
         #Get the number of tiem points. 
         n_points = len(t_sliced) 
@@ -428,41 +534,72 @@ class Front_Sim():
         if n_points <= min_window: 
             return 0, max(0, n_points - 1), np.nan 
             
-        #Get second order derivative of mode. 
-        dy = np.gradient(log_amp_sliced) 
-        d2y = np.gradient(dy) 
+        #Get the RAW amplitude data, not filtered. This will be used later to find huge cliffs without filter messing things up.
+        check_amp = raw_log_amp if raw_log_amp is not None else log_amp_sliced
+
+        #Setting the floor for grid clipping.
+        #4e-07 was chosen as it is approximately 2*fallback dx which is needed to resolve ablation front.
+        #Anything under this is most likely the front moving within a cell.
+        grid_floor_log = np.log(4e-07 + 1e-16) 
         
-        #Find the maximum second order derivative point. 
-        max_d2y_idx = np.argmax(np.abs(d2y)) 
+        #Data can many times have initialization cliffs which are very bad. 
+        #First step is to scan the data and start only when these cliffs are found. 
+        #These cliffs generally have an increase of around 3 orders of magnitude within a single step. 
+        cliff_end = 0
+        step_window = min(3, len(check_amp) - 1) #Step 3 times atleast.
         
-        #Step 3 indices away from this to get a safe start position (since sometimes modes can have an insane cliff when being initialized!) 
-        safe_start = max_d2y_idx + 3 
-        safe_start = min(safe_start, n_points - min_window - 1) 
-        safe_start = max(0, safe_start) 
-        
-        #Get maximum slope after trimming to the new start position. 
-        if safe_start < len(dy): 
-            max_slope_after = np.max(dy[safe_start:]) 
-        else: 
-            max_slope_after = 0 
+        if step_window > 0:
+            for i in range(len(check_amp) - step_window):
+                #Check for > 3 OOMs (np.log(1000) ~= 6.9) across the 3-step window
+                if np.abs(check_amp[i+step_window] - check_amp[i]) > np.log(1000):
+                    cliff_end = i + step_window
+                #Also check single step for > 2 OOMs just in case
+                elif np.abs(check_amp[i+1] - check_amp[i]) > np.log(100):
+                    cliff_end = max(cliff_end, i + 1)
+                    
+        #Step 3 indices away from the last detected cliff to get a safe start position.
+        if cliff_end > 0:
+            safe_start = min(cliff_end, n_points - min_window - 1)
             
-        #Fallbacks 
-        if max_slope_after <= 0: 
-            return 0, max(0, n_points - 1), np.nan 
+            #Switch back to the smoothed array for general flatness checks
+            dy_smooth = np.gradient(log_amp_sliced)
             
-        #Get a threshold to identify if the curve is flat or not. 
-        flat_threshold = 0.05 * max_slope_after 
-        
-        #Step across indices to make sure we don't start at a flat point. 
-        #Clamp to the first index where curve is not flat! 
-        start_idx = safe_start 
-        while start_idx < n_points - min_window: 
-            if dy[start_idx] >= flat_threshold: 
-                break 
-            start_idx += 1 
+            #Get maximum slope after trimming to the new start position. 
+            if safe_start < len(dy_smooth): 
+                max_slope_after = np.max(dy_smooth[safe_start:]) 
+            else: 
+                max_slope_after = 0 
+                
+            #Fallbacks (if there is no positive slope at all)
+            if max_slope_after <= 0: 
+                return 0, max(0, n_points - 1), np.nan 
+                
+            #Get a threshold to identify if the curve is flat or not. 
+            flat_threshold = 0.05 * max_slope_after 
             
-        if start_idx >= n_points - min_window: 
-            start_idx = max(0, n_points - min_window - 1) 
+            #Step across indices to make sure we don't start at a flat point. 
+            #Clamp to the first index where curve is not flat! 
+            start_idx = safe_start 
+            while start_idx < n_points - min_window: 
+                if dy_smooth[start_idx] >= flat_threshold and check_amp[start_idx] > grid_floor_log + 1e-9: 
+                    break 
+                start_idx += 1 
+                
+            if start_idx >= n_points - min_window: 
+                start_idx = max(0, n_points - min_window - 1) 
+        else:
+            #HARDCODE: Start directly at 0 if there is no unsafe start detected!
+            #Step forward to bypass any initial negative slope (vacuum expansion)
+            #AND skip flat sub-grid noise, but lock on immediately if it starts rising
+            start_idx = 0
+            while start_idx < n_points - min_window:
+                is_subgrid_and_flat = (check_amp[start_idx] <= grid_floor_log + 1e-9) and (check_amp[start_idx + 1] <= check_amp[start_idx])
+                is_decreasing = check_amp[start_idx + 1] < check_amp[start_idx]
+                
+                if is_subgrid_and_flat or is_decreasing:
+                    start_idx += 1
+                else:
+                    break
             
         #R^2 error logic across windows. 
         best_length = 0 
@@ -528,7 +665,13 @@ class Front_Sim():
         for i in range(n_modes): 
             #Slice amplitudes based on burn. 
             amp_post_burn = amplitudes_2d[skip_steps:, i] 
-            log_amp = np.log(amp_post_burn + 1e-12) 
+            
+            # SAFEGUARD: Prevent any accidental negative numbers from previous smoothing steps
+            # AND clip out anything below grid resolution (~4e-07) to avoid fitting sub-grid noise
+            amp_post_burn = np.maximum(amp_post_burn, 4e-07)
+            
+            #Lowered floor to 1e-16 to preserve true magnitudes of early simulation jumps!
+            log_amp = np.log(amp_post_burn + 1e-16) 
             
             #Fallbacks 
             t_eval = t_post_burn 
@@ -555,10 +698,11 @@ class Front_Sim():
             #Final evaluation timesteps, amplitudes. after start and end caps. 
             t_eval = t_eval[:cap_idx + 1] 
             smoothed_log_amp = smoothed_log_amp[:cap_idx + 1] 
+            raw_log_amp_eval = log_amp_eval[:cap_idx + 1]
                 
             #Get the linear region. 
             rel_start, rel_end, slope = self.find_anchored_linear_region( 
-                t_eval, smoothed_log_amp, min_window=min_window, r2_threshold=self.r2_threshold 
+                t_eval, smoothed_log_amp, raw_log_amp=raw_log_amp_eval, min_window=min_window, r2_threshold=self.r2_threshold 
             ) 
             
             if np.isnan(slope): 
@@ -573,17 +717,72 @@ class Front_Sim():
             
         return growth_rates, start_indices, end_indices #Return useful values. 
 
+    #### CALCULATION: Window Sensitivity Study ####
+    def compute_window_sensitivity(self, mode_idx, start_idx, end_idx, n_points=5, stride=1):
+        """
+        Function to compute window sensitivity.
+
+        Takes a specific start index, end index pairing (a linear fit) and varies the end index. 
+        Start index is not varied due to dataset specific reasons. 
+
+        Slops for a bunch of end indices are collected and then their standard deviation is taken as the error bar for each fit.
+        """
+        amp_col = self.valid_a_x_t[:, mode_idx] #Get the amplitude for a given mode, only one exists for ablation tracking.
+        amp_col = np.maximum(amp_col, 4e-07) #Get only the amplitudes above the fit.
+        log_amp = np.log(amp_col + 1e-16) #Convert to log scale
+
+        #Initialize the empty slope list
+        slopes = [] 
+
+        #Get the offsets
+        offsets = range(-n_points * stride, n_points * stride + 1, stride) 
+
+        #Loop over the offsets.
+        for offset in offsets: 
+            test_end = end_idx + offset 
+
+            #Fallbacks: keep the window inside the data and long enough to fit. 
+            if test_end <= start_idx + 1 or test_end >= len(self.times): 
+                continue 
+            #If the minimum window exceeds the one passed from outside the function, break.
+            if test_end - start_idx < self.min_window:
+                continue
+
+            #Polyfit for the window to get the slope.
+            t_window = self.times[start_idx:test_end] 
+            y_window = log_amp[start_idx:test_end] 
+
+            if len(t_window) < 2: 
+                continue 
+
+            slope, intercept = np.polyfit(t_window, y_window, 1) 
+
+            #Only keep physically sensible (positive growth) slopes in the ensemble. 
+            if slope <= 0: 
+                continue 
+
+            slopes.append(slope) 
+
+        #Need at least 2 valid windows to say anything meaningful about the spread. 
+        if len(slopes) < 2: 
+            return np.nan 
+
+        return np.std(slopes) #Return useful data :)
+
+    #### PLOT: Plots raw amplitude and smooth amplitude with their linear fits. ####
     def amplitude_plot(self, save=False, show=True, save_dir="debug_plots"): 
         plt.figure(figsize=(10, 6)) 
-        amp = self.amp_t 
-        valid = np.isfinite(amp) 
-        plt.plot(self.times[valid], amp[valid], color='black', linewidth=1.5, alpha=0.8, marker='o', markersize=3) 
+        raw_amp = self.amp_t 
+        smooth_amp = self.smoothed_amp_t
+        valid = np.isfinite(smooth_amp) 
+        plt.plot(self.times[valid], raw_amp[valid], color='gray', linewidth=1.0, alpha=0.4, label="Raw Amplitude (Grid Jitter)")
+        plt.plot(self.times[valid], smooth_amp[valid], color='black', linewidth=1.5, alpha=0.8, marker='o', markersize=3, label="Smoothed Front Amplitude") 
         if self.lin_start_idx != -1 and self.lin_end_idx != -1 and self.lin_end_idx > self.lin_start_idx: 
             region_mask = valid[self.lin_start_idx:self.lin_end_idx] 
             t_lin = self.times[self.lin_start_idx:self.lin_end_idx][region_mask] 
-            amp_lin = amp[self.lin_start_idx:self.lin_end_idx][region_mask] 
+            amp_lin = smooth_amp[self.lin_start_idx:self.lin_end_idx][region_mask] 
             if len(t_lin) > 1: 
-                log_amp_lin = np.log(np.abs(amp_lin) + 1e-12) 
+                log_amp_lin = np.log(np.abs(amp_lin) + 1e-16) 
                 slope, intercept = np.polyfit(t_lin, log_amp_lin, 1) 
                 fit_line = np.exp(slope * t_lin + intercept) 
                 plt.axvspan(self.times[self.lin_start_idx], self.times[max(self.lin_end_idx - 1, self.lin_start_idx)], color='#2ca02c', alpha=0.2) 
@@ -609,6 +808,7 @@ class Front_Sim():
         else: 
             plt.close() 
 
+    #### PLOT: Plots a snapshot of the ablation front for a given index ####
     def front_snapshot_plot(self, timestep_index=-1, save=False, show=True, save_dir="debug_plots"): 
         front_x = self.front_t[timestep_index] 
         t = self.timesteps[timestep_index] 
@@ -628,6 +828,7 @@ class Front_Sim():
         else: 
             plt.close() 
 
+    #### PLOT: Plots a 3D ablation surface (x,y,t) ####
     def plot_3d_ablation_surface(self, save=False, show=True, save_dir="debug_plots"): 
         fig = plt.figure(figsize=(12, 8)) 
         ax = fig.add_subplot(111, projection='3d') 
@@ -650,13 +851,21 @@ class Front_Sim():
 
     #### PLOT: Plot the Dominant Mode and Its Linear Fit #### 
     def dominant_mode_fit_plotter(self, save=False, show=True, save_dir="debug_plots"): 
-        """ Plots the dominant amplitude mode and its linear fit. Left tile: Full time evolution. Right tile: Zoomed in view of the linear fit region with data point markers. """ 
+        """ 
+        Plots the dominant amplitude mode and its linear fit. 
+        Left tile: Full time evolution. 
+        Right tile: Zoomed in view of the linear fit region with data point markers. 
+        """ 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6)) 
         amp_dom_idx = self.amp_dom_idx 
         dom_scale = self.wavelengths_m[amp_dom_idx] 
         # Extract data post burn-in 
         t_post_burn = self.times[self.burn_in:] 
+        
+        # Raw for background, smoothed for primary line
+        raw_amp_post_burn = self.raw_a_x_t[self.burn_in:, amp_dom_idx]
         amp_post_burn = self.valid_a_x_t[self.burn_in:, amp_dom_idx] 
+        
         absolute_start = self.start_indices[amp_dom_idx] 
         absolute_end = self.end_indices[amp_dom_idx] 
         no_region_found = (absolute_start == -1 or absolute_end == -1) 
@@ -664,7 +873,8 @@ class Front_Sim():
         # --------------------------- 
         # Left Tile: Full View 
         # --------------------------- 
-        ax1.plot(t_post_burn, amp_post_burn, color='black', linewidth=1.5, alpha=0.8, label="Mode Amplitude") 
+        ax1.plot(t_post_burn, raw_amp_post_burn, color='gray', linewidth=1.0, alpha=0.4, label="Raw Amplitude (Grid Jitter)") 
+        ax1.plot(t_post_burn, amp_post_burn, color='black', linewidth=1.5, alpha=0.8, label="Smoothed Mode Amplitude") 
         ax1.set_yscale('log') 
         ax1.set_title(rf"Full View: $\lambda$ = {dom_scale:.2e} m", fontsize=14, fontweight='bold') 
         ax1.set_xlabel("Time (s)", fontsize=12) 
@@ -674,7 +884,8 @@ class Front_Sim():
         # --------------------------- 
         # Right Tile: Zoomed View 
         # --------------------------- 
-        ax2.plot(t_post_burn, amp_post_burn, color='black', linewidth=1.5, marker='o', markersize=5, alpha=0.8, label="Mode Amplitude") 
+        ax2.plot(t_post_burn, raw_amp_post_burn, color='gray', linewidth=1.0, alpha=0.4, label="Raw Amplitude") 
+        ax2.plot(t_post_burn, amp_post_burn, color='black', linewidth=1.5, marker='o', markersize=5, alpha=0.8, label="Smoothed Amplitude") 
         ax2.set_yscale('log') 
         ax2.set_title("Zoomed View: Linear Fit Region", fontsize=14, fontweight='bold') 
         ax2.set_xlabel("Time (s)", fontsize=12) 
@@ -688,13 +899,17 @@ class Front_Sim():
             amp_linear = self.valid_a_x_t[absolute_start:absolute_end, amp_dom_idx] 
             if len(t_linear) > 1: 
                 # Recalculate fit line for plotting 
-                log_amp_linear = np.log(amp_linear + 1e-12) 
+                log_amp_linear = np.log(amp_linear + 1e-16) 
                 slope, intercept = np.polyfit(t_linear, log_amp_linear, 1) 
                 fit_line = np.exp(slope * t_linear + intercept) 
                 
                 # Add fit to Left Plot 
                 ax1.axvspan(self.times[absolute_start], self.times[max(absolute_end - 1, absolute_start)], color='#2ca02c', alpha=0.2, label="Fit Region") 
-                ax1.plot(t_linear, fit_line, color='red', linestyle='--', linewidth=2.5, label=rf"Linear Fit ($\gamma$={slope:.2e})") 
+                fit_label = rf"Linear Fit ($\gamma$={slope:.2e}" 
+                if hasattr(self, "dom_a_growth_err") and np.isfinite(self.dom_a_growth_err): 
+                    fit_label += rf" $\pm$ {self.dom_a_growth_err:.1e}" 
+                fit_label += ")" 
+                ax1.plot(t_linear, fit_line, color='red', linestyle='--', linewidth=2.5, label=fit_label) 
                 
                 # Add fit to Right Plot 
                 ax2.axvspan(self.times[absolute_start], self.times[max(absolute_end - 1, absolute_start)], color='#2ca02c', alpha=0.2) 
@@ -711,7 +926,7 @@ class Front_Sim():
                 y_zoom_data = self.valid_a_x_t[zoom_start_idx:zoom_end_idx+1, amp_dom_idx] 
                 if len(y_zoom_data) > 0: 
                     y_min, y_max = np.min(y_zoom_data), np.max(y_zoom_data) 
-                    log_min, log_max = np.log10(y_min + 1e-12), np.log10(y_max + 1e-12) 
+                    log_min, log_max = np.log10(y_min + 1e-16), np.log10(y_max + 1e-16) 
                     margin = max((log_max - log_min) * 0.15, 0.1) # Add 15% vertical margin 
                     ax2.set_ylim(10**(log_min - margin), 10**(log_max + margin)) 
         else: 
